@@ -29,7 +29,8 @@ It's written in C++ with portability in mind, with builds for Windows, Linux and
 </p>
 
 <p align="center">
-  <a href="#about-this-fork">About this fork</a> |
+  <a href="#elganflow">Elganflow</a> |
+  <a href="#about-this-fork">Crowded-areas changes</a> |
   <a href="#compatibility">Compatibility</a> |
   <a href="#development">Development</a> |
   <a href="#building">Building</a> |
@@ -38,9 +39,21 @@ It's written in C++ with portability in mind, with builds for Windows, Linux and
   <a href="#license">License</a>
 </p>
 
+## Elganflow
+
+**Elganflow** is a personal, unofficial fork of [Eglantine](https://github.com/Djihads80/Eglantine). The work is on the `elganflow` branch. Please report problems caused by its changes here, not upstream.
+
+It builds on [KektJ's crowded-areas fork](https://github.com/KektJ/Eglantine) (described below) and adds:
+
+- **Larger Vulkan descriptor payload:** `GUEST_FRAME_PAYLOAD_SIZE` goes from 512 KiB to 2 MiB. In Fire Emblem: Fortune's Weave's battles, the old size overflowed about 13 times a second, and each overflow made the emulator wait for the GPU. It costs about 300 MB more RAM.
+- **Two experimental GPU split options, off by default:** `EDEN_NX2_WRITER_WAIT=auto` and `EDEN_NX2_ACQUIRE_PEEK=1` skip some waits between the GPU threads. They halve the GPU split drains but haven't raised the frame rate in the tests so far.
+- **Name:** the window, menus and executable are called Elganflow (`elganflow.exe`). Settings, saves and shader caches stay in the same `eden` folder as Eglantine's.
+
+Releases are Windows x64 builds made with MSVC. Use the Fire Emblem: Fortune's Weave settings from the section below: Texture array limit 64 and Run ahead of the GPU set to Relaxed.
+
 ## About this fork
 
-This is an unofficial fork of [Eglantine](https://github.com/Djihads80/Eglantine), aimed at raising the frame rate in crowded areas of Fire Emblem: Fortune's Weave. The work is on the `perf/crowded-areas` branch. Please report problems caused by these changes here, not upstream.
+These changes come from [KektJ's fork](https://github.com/KektJ/Eglantine), branch `perf/crowded-areas`, aimed at raising the frame rate in crowded areas of Fire Emblem: Fortune's Weave. The text below is KektJ's, and so are the builds and results it describes.
 
 ### Results
 
