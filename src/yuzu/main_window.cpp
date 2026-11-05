@@ -1299,7 +1299,7 @@ void MainWindow::InitializeHotkeys() {
     hotkey_registry.LoadHotkeys();
 
     LinkActionShortcut(ui->action_Load_File, QStringLiteral("Load File"));
-    LinkActionShortcut(ui->action_Exit, QStringLiteral("Exit Elganflow"));
+    LinkActionShortcut(ui->action_Exit, QStringLiteral("Exit Eglantine"));
     LinkActionShortcut(ui->action_Restart, QStringLiteral("Restart Emulation"));
     LinkActionShortcut(ui->action_Pause, QStringLiteral("Continue/Pause Emulation"));
     LinkActionShortcut(ui->action_Stop, QStringLiteral("Stop Emulation"));
@@ -2841,13 +2841,15 @@ void MainWindow::OnGameListShowList(bool show) {
 
 void MainWindow::OnGameListOpenPerGameProperties(const std::string& file) {
     u64 title_id{};
-    const auto v_file = Core::GetGameFileFromPath(QtCommon::vfs, file);
-    const auto loader = Loader::GetLoader(*QtCommon::system, v_file);
+    {
+        const auto v_file = Core::GetGameFileFromPath(QtCommon::vfs, file);
+        const auto loader = Loader::GetLoader(*QtCommon::system, v_file);
 
-    if (loader == nullptr || loader->ReadProgramId(title_id) != Loader::ResultStatus::Success) {
-        QMessageBox::information(this, tr("Properties"),
-                                 tr("The game properties could not be loaded."));
-        return;
+        if (loader == nullptr || loader->ReadProgramId(title_id) != Loader::ResultStatus::Success) {
+            QMessageBox::information(this, tr("Properties"),
+                                     tr("The game properties could not be loaded."));
+            return;
+        }
     }
 
     OpenPerGameConfiguration(title_id, file);
@@ -3866,11 +3868,9 @@ void MainWindow::OnConfigurePerGame() {
 }
 
 void MainWindow::OpenPerGameConfiguration(u64 title_id, const std::string& file_name) {
-    const auto v_file = Core::GetGameFileFromPath(QtCommon::vfs, file_name);
-
     Settings::SetConfiguringGlobal(false);
     ConfigurePerGame dialog(this, title_id, file_name, vk_device_records, *QtCommon::system);
-    dialog.LoadFromFile(v_file);
+    dialog.LoadFromFile(Core::GetGameFileFromPath(QtCommon::vfs, file_name));
 
     const auto result = dialog.exec();
 
