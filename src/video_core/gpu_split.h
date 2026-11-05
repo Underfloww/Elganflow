@@ -119,6 +119,9 @@ public:
     void Publish();
     /// Waits until the back executed everything sent so far.
     void Drain();
+    /// Elganflow: Drain that stops as soon as done(context) holds (checked while the back runs).
+    /// Returns done(context); false means the back executed everything, as after Drain.
+    bool DrainUntil(bool (*done)(void*), void* context);
 
     /// Compute or copy work was just sent: what can write GPU-written command lists.
     void NoteWriter() {

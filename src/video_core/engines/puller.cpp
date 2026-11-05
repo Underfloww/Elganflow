@@ -59,6 +59,69 @@ void DrainBack() {
     VideoCommon::GpuSplit::Get().Drain();
 }
 
+// Elganflow: a Switch 2 acquire drained the split's back before reading its semaphore, ~1100 times
+// a second on a Fire Emblem: Fortune's Weave map, though every one was already met ("0 waited"):
+// the front spent most of its time waiting for the back. Guest memory is read first, without the
+// back's caches (safe from the front); a met equal/greater-or-equal acquire skips the drain. The
+// semaphores are counters: a value met in memory stays met. Anything else takes the full path.
+// EDEN_NX2_ACQUIRE_PEEK=1 turns it on. Off by default: on the Fire Emblem map it halved the drains
+// but not the frame time (the back thread is the limit); untested elsewhere.
+const bool g_acquire_peek = [] {
+    const char* value = std::getenv("EDEN_NX2_ACQUIRE_PEEK");
+    return value != nullptr && value[0] == '1';
+}();
+std::atomic<u64> g_acquire_peeks{};
+std::atomic<u64> g_acquire_peek_hits{};
+
+bool PeekAcquireMet(DmaPusher& dma_pusher, GPUVAddr address, u32 value, bool equal, bool gequal) {
+    if (!g_acquire_peek || !VideoCommon::GpuSplit::Get().Active() || (!equal && !gequal)) {
+        return false;
+    }
+    const u32 current = dma_pusher.memory_manager.Read<u32>(address);
+    const bool met = equal ? current == value : current >= value;
+    const u64 peeks = g_acquire_peeks.fetch_add(1, std::memory_order_relaxed) + 1;
+    const u64 hits = g_acquire_peek_hits.fetch_add(met ? 1 : 0, std::memory_order_relaxed) + (met ? 1 : 0);
+    if (peeks % 20000 == 0) {
+        LOG_INFO(HW_GPU, "Elganflow: {} of {} acquires were met without draining the split", hits,
+                 peeks);
+    }
+    return met;
+}
+
+// Elganflow: an acquire not met yet waits for the release it needs, not for everything queued on
+// the back: the front goes on as soon as guest memory holds the value, while the back keeps
+// running what came after. When it never shows there (the back ran everything), the full path
+// below runs as before.
+struct AcquireWatch {
+    DmaPusher* dma_pusher;
+    GPUVAddr address;
+    u32 value;
+    bool equal;
+};
+std::atomic<u64> g_acquire_early{};
+
+bool AcquireWatchMet(void* context) {
+    const auto& watch = *static_cast<const AcquireWatch*>(context);
+    const u32 current = watch.dma_pusher->memory_manager.Read<u32>(watch.address);
+    return watch.equal ? current == watch.value : current >= watch.value;
+}
+
+bool DrainUntilAcquireMet(DmaPusher& dma_pusher, GPUVAddr address, u32 value, bool equal,
+                          bool gequal) {
+    if (!g_acquire_peek || !VideoCommon::GpuSplit::Get().Active() || (!equal && !gequal)) {
+        return false;
+    }
+    AcquireWatch watch{&dma_pusher, address, value, equal};
+    if (!VideoCommon::GpuSplit::Get().DrainUntil(&AcquireWatchMet, &watch)) {
+        return false;
+    }
+    if (const u64 early = g_acquire_early.fetch_add(1, std::memory_order_relaxed) + 1;
+        early % 20000 == 0) {
+        LOG_INFO(HW_GPU, "Elganflow: {} acquires were met before the split drained", early);
+    }
+    return true;
+}
+
 } // Anonymous namespace
 
 bool Puller::PendingAcquire::Matches(u32 current) const {
@@ -250,6 +313,12 @@ void Puller::ProcessSemaphoreTriggerMethod(DmaPusher& dma_pusher) {
             return;
         }
         VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::AcquireChecks, 1);
+        const bool equal = op == GpuSemaphoreOperation::AcquireEqual;
+        const bool gequal = op == GpuSemaphoreOperation::AcquireGequal;
+        if (PeekAcquireMet(dma_pusher, acquire.address, acquire.value, equal, gequal) ||
+            DrainUntilAcquireMet(dma_pusher, acquire.address, acquire.value, equal, gequal)) {
+            return;
+        }
         DrainBack();
         if (acquire.Matches(ReadSemaphoreWord(dma_pusher, acquire.address))) {
             return;

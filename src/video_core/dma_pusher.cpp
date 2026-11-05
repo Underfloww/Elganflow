@@ -30,6 +30,60 @@ namespace Tegra {
 constexpr u32 MacroRegistersStart = 0xE00;
 constexpr u32 ComputeInline = 0x6D;
 
+namespace {
+// Elganflow: before each command list entry the front waits for the compute and copy work still
+// queued on the split's back (WaitForWriters), in case that work writes the entry's words for the
+// first time. Games that never run command lists the GPU writes pay a front/back ping-pong for
+// nothing (Fire Emblem: Fortune's Weave on a map: the front waited half of its time, ~32 FPS).
+// EDEN_NX2_WRITER_WAIT: unset or 1 always waits (upstream behaviour), 0 never does, "auto" waits
+// during a warm-up and keeps waiting only once the game shows it needs it. Off by default: on the
+// Fire Emblem map it removed the waits but not a single frame (the back thread is the limit).
+enum class WriterWaitMode { Auto, Always, Never };
+const WriterWaitMode g_writer_wait_mode = [] {
+    const char* value = std::getenv("EDEN_NX2_WRITER_WAIT");
+    if (value != nullptr && value[0] == '0') {
+        return WriterWaitMode::Never;
+    }
+    if (value != nullptr && value[0] == 'a') {
+        return WriterWaitMode::Auto;
+    }
+    return WriterWaitMode::Always;
+}();
+constexpr u64 WriterWaitWarmup = 2000;
+std::atomic<u64> g_writer_waits{};
+std::atomic<bool> g_writer_wait_needed{};
+
+bool ShouldWaitForWriters() {
+    switch (g_writer_wait_mode) {
+    case WriterWaitMode::Always:
+        return true;
+    case WriterWaitMode::Never:
+        return false;
+    case WriterWaitMode::Auto:
+        break;
+    }
+    // A game whose GPU writes command lists keeps the wait for the whole session.
+    if (g_writer_wait_needed.load(std::memory_order_relaxed) ||
+        g_nx2_has_command_list_pages.load(std::memory_order_relaxed)) {
+        return true;
+    }
+    return g_writer_waits.load(std::memory_order_relaxed) < WriterWaitWarmup;
+}
+
+void NoteWriterWait(bool mattered) {
+    if (mattered && !g_writer_wait_needed.exchange(true, std::memory_order_relaxed)) {
+        LOG_INFO(HW_GPU, "Elganflow: a queued writer wrote a command list, the front keeps waiting");
+    }
+    if (g_writer_waits.fetch_add(1, std::memory_order_relaxed) + 1 == WriterWaitWarmup &&
+        g_writer_wait_mode == WriterWaitMode::Auto &&
+        !g_writer_wait_needed.load(std::memory_order_relaxed) &&
+        !g_nx2_has_command_list_pages.load(std::memory_order_relaxed)) {
+        LOG_INFO(HW_GPU, "Elganflow: {} writer waits never mattered, the front stops waiting",
+                 WriterWaitWarmup);
+    }
+}
+} // Anonymous namespace
+
 DmaPusher::DmaPusher(Core::System& system_, MemoryManager& memory_manager_, Control::ChannelState& channel_state_)
     : system{system_}
     , memory_manager{memory_manager_}
@@ -178,10 +232,11 @@ bool DmaPusher::Step() {
         // billions of instances and lost the device loading a race).
         bool gpu_written =
             IsGpuWrittenCommands(dma_state.dma_get, size_t{header.size} * sizeof(u32));
-        if (!gpu_written && VideoCommon::GpuSplit::Get().Active() &&
+        if (!gpu_written && VideoCommon::GpuSplit::Get().Active() && ShouldWaitForWriters() &&
             VideoCommon::GpuSplit::Get().WaitForWriters()) {
             gpu_written =
                 IsGpuWrittenCommands(dma_state.dma_get, size_t{header.size} * sizeof(u32));
+            NoteWriterWait(gpu_written);
         }
         // The words as submitted, unless this is a resumed entry or the GPU has newer ones the
         // safe read below would flush (with the split, the front can't tell: it reads memory
